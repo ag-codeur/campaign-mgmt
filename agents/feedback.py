@@ -34,7 +34,7 @@ def run_feedback(
     execution_results: dict,
     rating: str,
 ) -> dict:
-    llm = ChatGroq(api_key=settings.groq_api_key, model="llama3-8b-8192", temperature=0.2)
+    llm = ChatGroq(api_key=settings.groq_api_key, model="llama-3.1-8b-instant", temperature=0.2)
 
     branch_summary = [
         {

@@ -49,7 +49,7 @@ def run_creator(strategy: dict, branches: list) -> list:
     Generate email content for every branch (and every A/B variant within each branch).
     Calls run_creator_single per branch - callers may parallelise this with a thread pool.
     """
-    llm = ChatGroq(api_key=settings.groq_api_key, model="llama3-8b-8192", temperature=0.7)
+    llm = ChatGroq(api_key=settings.groq_api_key, model="llama-3.1-8b-instant", temperature=0.7)
     past = query_kb(f"campaign email content: {strategy.get('objective', '')}")
     kb_context = "\n".join(past) if past else "No past content found."
 
@@ -88,7 +88,7 @@ def run_creator_single(
     }
 
     if llm is None:
-        llm = ChatGroq(api_key=settings.groq_api_key, model="llama3-8b-8192", temperature=0.7)
+        llm = ChatGroq(api_key=settings.groq_api_key, model="llama-3.1-8b-instant", temperature=0.7)
     if kb_context is None:
         past = query_kb(f"campaign email content: {strategy.get('objective', '')}")
         kb_context = "\n".join(past) if past else "No past content found."

@@ -3,19 +3,23 @@ Authentication utilities: password hashing and session token management.
 """
 
 import uuid
+import bcrypt
 from datetime import datetime, timedelta
-from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 SESSION_TTL_HOURS = 8
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 def hash_password(plain: str) -> str:
-    return pwd_context.hash(plain)
+    """Hash password using bcrypt."""
+    # Truncate to 72 bytes (bcrypt limit) and hash
+    plain_bytes = plain.encode('utf-8')[:72]
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(plain_bytes, salt).decode('utf-8')
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    """Verify password against bcrypt hash."""
+    plain_bytes = plain.encode('utf-8')[:72]
+    return bcrypt.checkpw(plain_bytes, hashed.encode('utf-8'))
 
 def create_session_token(db: Session, user_id: str) -> str:
     """Create a new AuthSession row and return the token UUID."""

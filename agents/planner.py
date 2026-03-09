@@ -70,7 +70,7 @@ Age Category: {age_category}"""),
 
 def run_planner(goal: str, audience: str, branches: list) -> dict:
     """Generate email campaign strategy informed by audience branches and past KB learnings."""
-    llm = ChatGroq(api_key=settings.groq_api_key, model="llama3-8b-8192", temperature=0.3)
+    llm = ChatGroq(api_key=settings.groq_api_key, model="llama-3.1-8b-instant", temperature=0.3)
 
     past = query_kb(f"campaign goal: {goal}")
     kb_context = "\n".join(past) if past else "No past campaigns found."
@@ -105,7 +105,7 @@ def run_planner(goal: str, audience: str, branches: list) -> dict:
 
 def suggest_audience_branches(goal: str, audience: str) -> list:
     """AI suggests 2-4 audience branches based on campaign goal and audience description."""
-    llm = ChatGroq(api_key=settings.groq_api_key, model="llama3-8b-8192", temperature=0.5)
+    llm = ChatGroq(api_key=settings.groq_api_key, model="llama-3.1-8b-instant", temperature=0.5)
 
     try:
         response = (_BRANCH_SUGGESTION_PROMPT | llm).invoke({
@@ -140,7 +140,7 @@ def suggest_audience_query(
     age_category: str = None,
 ) -> str:
     """AI suggests an editable SQL-like audience filter query for a specific branch."""
-    llm = ChatGroq(api_key=settings.groq_api_key, model="llama3-8b-8192", temperature=0.2)
+    llm = ChatGroq(api_key=settings.groq_api_key, model="llama-3.1-8b-instant", temperature=0.2)
 
     try:
         response = (_QUERY_SUGGESTION_PROMPT | llm).invoke({

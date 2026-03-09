@@ -20,9 +20,9 @@ from core.database import (
 from core.auth import hash_password, verify_password, create_session_token, get_session_user
 from agents.supervisor import (
     run_campaign_workflow,
-    run_content_creation,
-    run_execution,
-    run_evaluation,
+    run_content_creation_sync,
+    run_execution_sync,
+    run_evaluation_sync,
 )
 from agents.planner import suggest_audience_branches, suggest_audience_query
 
@@ -81,6 +81,8 @@ class BranchUpdate(BaseModel):
     age_category: Optional[str] = None
     custom_query: Optional[str] = None
     scheduled_at: Optional[str] = None
+    email_subject: Optional[str] = None
+    email_body: Optional[str] = None
 
 class SuggestQueryRequest(BaseModel):
     goal: Optional[str] = None
@@ -538,6 +540,7 @@ def submit_campaign(
 async def manager_approve_campaign(
     campaign_id: str,
     req: ManagerApprovalRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -560,7 +563,7 @@ async def manager_approve_campaign(
         c.updated_at = datetime.utcnow()
         db.commit()
         
-        bg_add_task(run_campaign_workflow, campaign_id)
+        background_tasks.add_task(run_campaign_workflow, campaign_id)
         logger.info(f"Campaign {campaign_id} approved by {current_user.id} - AI planning started")
         return {"message": "Campaign approved - AI planning has started"}
     else:
@@ -578,7 +581,7 @@ async def manager_approve_campaign(
 async def approve_campaign(
     campaign_id: str,
     req: ApprovalRequest,
-    bg: BackgroundTasks,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -586,40 +589,60 @@ async def approve_campaign(
     if not c:
         raise HTTPException(404, "Campaign not found")
 
+    logger.info(f"[APPROVE] Campaign {campaign_id} in status {c.status}, approved={req.approved}")
+
     if c.status == "awaiting_plan_approval":
         if req.approved:
-            bg_add_task(run_content_creation, campaign_id)
+            logger.info(f"[APPROVE] Approving strategy for {campaign_id} - updating to creating_content")
+            c.status = "creating_content"
+            c.updated_at = datetime.utcnow()
+            db.commit()
+            logger.info(f"[APPROVE] Status committed for {campaign_id}")
+            background_tasks.add_task(run_content_creation_sync, campaign_id)
+            logger.info(f"[APPROVE] Background task queued for {campaign_id}")
             return {"message": "Strategy approved - generating email content per branch"}
         else:
-            c.status = "approved"
+            logger.info(f"[APPROVE] Rejecting strategy for {campaign_id} - returning to draft")
+            c.status = "draft"
             c.rejection_feedback = req.feedback
             c.updated_at = datetime.utcnow()
             db.commit()
-            bg_add_task(run_campaign_workflow, campaign_id)
-            return {"message": "Strategy rejected - replanning with your feedback"}
+            return {"message": "Strategy rejected - campaign returned to draft for revisions"}
     elif c.status == "awaiting_content_approval":
         if req.approved:
             branches = db.query(AudienceBranch).filter(AudienceBranch.campaign_id == campaign_id).all()
             has_schedule = any(b.scheduled_at for b in branches)
             
             if not has_schedule:
+                # No scheduled time - execute immediately
+                c.status = "executing"
+                c.updated_at = datetime.utcnow()
+                db.commit()
+                logger.info(f"[APPROVE] Content approved, executing immediately for {campaign_id}")
+                background_tasks.add_task(run_execution_sync, campaign_id)
+                return {"message": "Content approved - delivering emails now"}
+            else:
+                # Has scheduled times - keep for batch scheduler
                 c.status = "scheduled"
                 c.updated_at = datetime.utcnow()
                 db.commit()
-                bg_add_task(run_execution, campaign_id)
-                return {"message": "Content approved - campaign scheduled for delivery"}
-            else:
-                c.rejection_feedback = req.feedback
-                c.updated_at = datetime.utcnow()
-                db.commit()
-                bg_add_task(run_content_creation, campaign_id)
-                return {"message": "Content rejected - regenerating email content"}
+                logger.info(f"[APPROVE] Content approved, scheduled for {campaign_id}")
+                return {"message": "Content approved - emails will be delivered at scheduled times"}
+        else:
+            # Rejection case
+            c.status = "draft"
+            c.rejection_feedback = req.feedback
+            c.updated_at = datetime.utcnow()
+            db.commit()
+            logger.info(f"[APPROVE] Content rejected for {campaign_id}")
+            return {"message": "Content rejected - campaign returned to draft for revisions"}
 
     raise HTTPException(400, f"Campaign not in an approval state (current: {c.status})")
 
 @app.post("/campaigns/{campaign_id}/execute")
 async def execute_campaign(
     campaign_id: str,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -629,14 +652,14 @@ async def execute_campaign(
     if c.status != "scheduled":
         raise HTTPException(400, f"Campaign must be in 'scheduled' state (current: {c.status})")
     
-    bg_add_task(run_execution, campaign_id)
+    background_tasks.add_task(run_execution_sync, campaign_id)
     return {"message": "Execution triggered"}
 
 @app.post("/campaigns/{campaign_id}/rate")
 async def rate_campaign(
     campaign_id: str,
     req: RatingRequest,
-    bg: BackgroundTasks,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -646,9 +669,18 @@ async def rate_campaign(
     if c.status != "awaiting_rating":
         raise HTTPException(400, f"Campaign not awaiting rating (current: {c.status})")
     
+    logger.info(f"[RATE] Saving rating '{req.rating}' for campaign {campaign_id}")
     c.rating = req.rating
-    bg_add_task(run_evaluation, campaign_id, req.rating)
-    return {"message": "Rating submitted - running evaluation"}
+    c.updated_at = datetime.utcnow()
+    db.commit()
+    
+    # Verify it was saved
+    db.refresh(c)
+    if not c.execution_results:
+        logger.warning(f"[RATE] Campaign {campaign_id} has no execution_results before evaluation")
+    logger.info(f"[RATE] Rating verified in DB: {c.rating} for campaign {campaign_id}. Has exec_results: {bool(c.execution_results)}")
+    background_tasks.add_task(run_evaluation_sync, campaign_id, req.rating)
+    return {"message": f"Rating '{req.rating}' submitted - running evaluation", "rating_saved": c.rating}
 
 # --- Audience Branch Endpoints ---
 
@@ -663,6 +695,63 @@ def get_branches(
     
     branches = db.query(AudienceBranch).filter(AudienceBranch.campaign_id == campaign_id).all()
     return [_branch_to_dict(b, db) for b in branches]
+
+@app.get("/campaigns/{campaign_id}/branches/{branch_id}/audience-estimate")
+def estimate_branch_audience(
+    campaign_id: str,
+    branch_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Estimate audience size for a branch based on filter criteria."""
+    if not _campaigns_query(db, current_user).filter(Campaign.id == campaign_id).first():
+        raise HTTPException(404, "Campaign not found")
+    
+    branch = db.query(AudienceBranch).filter(
+        AudienceBranch.id == branch_id,
+        AudienceBranch.campaign_id == campaign_id
+    ).first()
+    if not branch:
+        raise HTTPException(404, "Branch not found")
+    
+    # If the campaign has already been executed, return the actual sent count
+    if branch.sent_count is not None:
+        try:
+            return {"estimated_audience": int(branch.sent_count), "source": "actual_sent"}
+        except ValueError:
+            pass
+    
+    # Try to match real recipients
+    real_recipients = db.query(Recipient).filter(Recipient.unsubscribe_token.is_(None))
+    
+    if branch.language:
+        real_recipients = real_recipients.filter(Recipient.language == branch.language)
+    if branch.country:
+        real_recipients = real_recipients.filter(Recipient.country == branch.country)
+    if branch.age_category:
+        real_recipients = real_recipients.filter(Recipient.age_category == branch.age_category)
+    
+    real_count = real_recipients.count()
+    
+    # If actual recipients match, return that count; otherwise estimate
+    if real_count > 0:
+        return {"estimated_audience": real_count, "source": "actual_match"}
+    
+    # Fallback: estimate based on base population and filter reduction percentages
+    base_population = 10000
+    estimate = float(base_population)
+    
+    if branch.language:
+        estimate *= 0.60  # Language reduces to 60% of base
+    if branch.country:
+        estimate *= 0.50  # Country narrows further to 50%
+    if branch.age_category:
+        estimate *= 0.40  # Age category narrows to 40%
+    if branch.custom_query:
+        estimate *= 0.70  # Custom query typically has 70% match
+    
+    estimate = max(int(estimate), 100)  # Minimum 100 estimated recipients
+    return {"estimated_audience": estimate, "source": "estimated"}
 
 @app.post("/campaigns/{campaign_id}/branches", status_code=201)
 def add_branch(
@@ -714,6 +803,8 @@ def update_branch(
     if req.age_category is not None: b.age_category = req.age_category
     if req.custom_query is not None: b.custom_query = req.custom_query
     if req.scheduled_at is not None: b.scheduled_at = parse_scheduled_at(req.scheduled_at)
+    if req.email_subject is not None: b.email_subject = req.email_subject
+    if req.email_body is not None: b.email_body = req.email_body
 
     b.updated_at = datetime.utcnow()
     db.commit()
@@ -770,7 +861,6 @@ def suggest_query_endpoint(
     query = suggest_audience_query(
         goal=c.goal, 
         audience=c.audience,
-        branch_name=req.branch_name,
         language=req.language,
         country=req.country,
         age_category=req.age_category

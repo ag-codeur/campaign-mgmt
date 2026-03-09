@@ -138,6 +138,33 @@ def fmt_dt(dt_str):
    except Exception:
        return dt_str[:16]
 
+def render_agent_run(r: dict):
+   """Render an agent run record as an expander."""
+   status_colors = {"running": "🟡", "completed": "🟢", "failed": "🔴"}
+   icon = status_colors.get(r.get("status"), "⚪️")
+   agent_icons = {
+       "planner": "📝", "creator": "🎨", "executor": "🚀",
+       "feedback": "📊", "chat": "💬", "translate": "🌐",
+   }
+   a_icon = agent_icons.get(r.get("agent_type"), "🤖")
+   dur = f"{r['duration_ms']}ms" if r.get("duration_ms") else "running..."
+   started = fmt_dt(r.get("started_at"))
+   label = (
+       f"{icon} {a_icon} **{r.get('agent_type', '?').title()}** — "
+       f"{r.get('status', '?')} • {dur} • {started}"
+   )
+   with st.expander(label, expanded=(r.get("status") == "running")):
+       c1, c2, c3 = st.columns(3)
+       c1.caption(f"**Campaign:** `{r.get('campaign_id', '-')[:20]}`")
+       c2.caption(f"**Branch:** `{r.get('branch_id', '-') or '-'}`")
+       c3.caption(f"**Variant:** `{r.get('variant_id', '-') or '-'}`")
+       if r.get("input_summary"):
+           st.markdown(f"**Input:** {r['input_summary']}")
+       if r.get("output_summary"):
+           st.success(f"**Output:** {r['output_summary']}")
+       if r.get("error_message"):
+           st.error(f"**Error:** {r['error_message']}")
+
 
 # --- RENDERING GATE - LOGIN / CHANGE-PASSWORD / APP -----------------------
 
@@ -391,13 +418,13 @@ with tab_create:
                 placeholder="e.g, Increase newsletter sign-ups by 20% in Q1 among urban professionals",
                 height=100,
             )
-        audience = st.text_area(
-            "Target Audience Description *",
-            placeholder="e.g. 25-45 year old urban professionals interested in productivity tools",
-            height=80,
-        )
+            audience = st.text_area(
+                "Target Audience Description *",
+                placeholder="e.g. 25-45 year old urban professionals interested in productivity tools",
+                height=80,
+            )
 
-        save_btn = st.form_submit_button("📂 Save as Draft", type="primary")
+            save_btn = st.form_submit_button("📂 Save as Draft", type="primary")
 
         if save_btn:
             if not goal.strip() or not audience.strip():
@@ -411,6 +438,7 @@ with tab_create:
                     st.success(f"✅ Draft saved! Campaign ID: `{res['campaign_id']}`")
                     st.session_state.selected_campaign_id = res["campaign_id"]
                     st.info("Next: configure **Audience Branches**")
+                    st.rerun()
 
         st.divider()
         st.subheader("My Campaigns")
@@ -427,8 +455,14 @@ with tab_create:
                 col_goal.write(f"**{c['goal'][:65]}...**" if len(c['goal']) > 65 else f"**{c['goal']}**")
                 col_goal.caption(f"ID: `{c['id']}` • {fmt_dt(c.get('created_at')) or ''} {fmt_dt(c.get('updated_at')) or ''}")
                 col_status.write(status_badge(c["status"]))
-                if col_btn.button("Manage", key=f"manage_{c['id']}"):
+                
+                # Check if this campaign is currently selected
+                is_selected = st.session_state.selected_campaign_id == c["id"]
+                btn_label = "✓ Selected" if is_selected else "Manage"
+                
+                if col_btn.button(btn_label, key=f"manage_{c['id']}", disabled=is_selected):
                     st.session_state.selected_campaign_id = c["id"]
+                    st.success(f"Campaign selected! Go to **🚀 Audience Branches** tab to manage it.")
                     st.rerun()
 
 # --------------------------------------------------------------------------
@@ -639,36 +673,37 @@ with tab_branches:
                                             "Add variants below to run a split test."
                                         )
 
-                                    with st.expander("➕ Add A/B Variant"):
-                                        with st.form(f"add_variant_{branch['id']}"):
-                                            nv1, nv2 = st.columns(2)
-                                            nv_name = nv1.text_input(
-                                                "Variant Name",
-                                                placeholder="e.g. Variant A",
-                                                key=f"nv_name_{branch['id']}",
-                                            )
-                                            nv_split = nv2.number_input(
-                                                "Split %",
-                                                min_value=1.0, max_value=100.0,
-                                                value=50.0 if not ab_variants else max(1.0, 100.0 - total_split),
-                                                step=5.0,
-                                                key=f"nv_split_{branch['id']}",
-                                            )
-                                            add_var_btn = st.form_submit_button("➕ Add Variant")
-                                            if add_var_btn:
-                                                if not nv_name.strip():
-                                                    st.warning("Variant name is required.")
-                                                else:
-                                                    res = api_post(
-                                                        f"/campaigns/{sel_id}/branches/{branch['id']}/ab-variants",
-                                                        {
-                                                            "variant_name": nv_name.strip(),
-                                                            "split_percentage": float(nv_split),
-                                                        }
-                                                    )
-                                                    if res:
-                                                        st.success(f"Variant '{nv_name.strip()}' added!")
-                                                        st.rerun()
+                                    st.divider()
+                                    st.subheader("➕ Add A/B Variant")
+                                    with st.form(f"add_variant_{branch['id']}"):
+                                        nv1, nv2 = st.columns(2)
+                                        nv_name = nv1.text_input(
+                                            "Variant Name",
+                                            placeholder="e.g. Variant A",
+                                            key=f"nv_name_{branch['id']}",
+                                        )
+                                        nv_split = nv2.number_input(
+                                            "Split %",
+                                            min_value=1.0, max_value=100.0,
+                                            value=50.0 if not ab_variants else max(1.0, 100.0 - total_split),
+                                            step=5.0,
+                                            key=f"nv_split_{branch['id']}",
+                                        )
+                                        add_var_btn = st.form_submit_button("➕ Add Variant")
+                                        if add_var_btn:
+                                            if not nv_name.strip():
+                                                st.warning("Variant name is required.")
+                                            else:
+                                                res = api_post(
+                                                    f"/campaigns/{sel_id}/branches/{branch['id']}/ab-variants",
+                                                    {
+                                                        "variant_name": nv_name.strip(),
+                                                        "split_percentage": float(nv_split),
+                                                    }
+                                                )
+                                                if res:
+                                                    st.success(f"Variant '{nv_name.strip()}' added!")
+                                                    st.rerun()
                                 else:
                                     cols = st.columns(4)
                                     cols[0].metric("Language", branch.get("language") or "Any")
@@ -884,16 +919,19 @@ with tab_manager:
                         st.markdown(f"**Audience Branches ({len(branches_pc)}):**")
                         for b in branches_pc:
                             sched_str = fmt_dt(b.get("scheduled_at")) if b.get("scheduled_at") else "Immediate"
-                            for b in branches_pc:
-                                sched_str = fmt_dt(b.get("scheduled_at")) if b.get("scheduled_at") else "Immediate"
-                                st.write(
-                                    f"  * **{b['branch_name']}** -- "
-                                    f"{b.get('language') or 'Any'} / {b.get('country') or 'Any'} / "
-                                    f"Age {b.get('age_category') or 'all'} -- "
-                                    f"Send: {sched_str}"
-                                )
-                                if b.get("custom_query"):
-                                    st.code(b["custom_query"], language="sql")
+                            # Fetch actual audience count for manager
+                            est_pc = api_get(f"/campaigns/{pc['id']}/branches/{b['id']}/audience-estimate")
+                            match_count_pc = est_pc.get("estimated_audience", 0) if est_pc else 0
+                            
+                            st.write(
+                                f"  * **{b['branch_name']}** -- "
+                                f"{b.get('language') or 'Any'} / {b.get('country') or 'Any'} / "
+                                f"Age {b.get('age_category') or 'all'} -- "
+                                f"**Recipients: {match_count_pc}**"
+                            )
+                            st.write(f"    Send: {sched_str}")
+                            if b.get("custom_query"):
+                                st.code(b["custom_query"], language="sql")
 
                     st.divider()
                     col_approve, col_reject = st.columns(2)
@@ -1019,19 +1057,36 @@ with tab_ai:
 
                     for b in detail.get("branches", []):
                         with st.container():
+                            # Fetch actual audience count
+                            est = api_get(f"/campaigns/{ac['id']}/branches/{b['id']}/audience-estimate")
+                            match_count = est.get("estimated_audience", 0) if est else 0
                             branch_lang = b.get("language") or "Unknown"
+                            
                             st.markdown(
                                 f"**Branch: {b['branch_name']}** "
                                 f"({branch_lang} / {b.get('country') or 'Any'} / "
                                 f"Age: {b.get('age_category') or 'all'})"
                             )
-                            if b.get("email_subject"):
-                                st.markdown(f"**Subject:** {b['email_subject']}")
-                            if b.get("email_body"):
-                                st.text_area(
-                                    "Body (original)", value=b["email_body"], height=150,
-                                    disabled=True, key=f"body_view_{b['id']}",
+                            st.markdown(f"👥 **Matched Recipients:** `{match_count}`")
+                            
+                            new_subject = st.text_input(
+                                "Subject", value=b.get("email_subject", ""),
+                                key=f"edit_sub_{b['id']}",
+                            )
+                            new_body = st.text_area(
+                                "Body", value=b.get("email_body", ""), height=150,
+                                key=f"edit_body_{b['id']}",
+                            )
+                            
+                            if st.button("💾 Save Changes", key=f"save_b_{b['id']}"):
+                                res = api_put(
+                                    f"/campaigns/{ac['id']}/branches/{b['id']}",
+                                    {"email_subject": new_subject, "email_body": new_body},
                                 )
+                                if res:
+                                    st.success("Changes saved!")
+                                    time.sleep(0.5)
+                                    st.rerun()
 
                             if view_lang != "(show original)" and b.get("email_body"):
                                 trans_key = f"trans_{b['id']}_{view_lang}"
@@ -1080,13 +1135,25 @@ with tab_ai:
                                         f"{v.get('split_percentage', 0)}% of audience",
                                         expanded=True,
                                     ):
-                                        if v.get("email_subject"):
-                                            st.markdown(f"**Subject:** {v['email_subject']}")
-                                        if v.get("email_body"):
-                                            st.text_area(
-                                                "Body", value=v["email_body"], height=120,
-                                                disabled=True, key=f"var_body_{v['id']}",
+                                        # Editable variant content
+                                        v_sub = st.text_input(
+                                            "Subject", value=v.get("email_subject", ""),
+                                            key=f"v_sub_edit_{v['id']}",
+                                        )
+                                        v_body = st.text_area(
+                                            "Body", value=v.get("email_body", ""), height=120,
+                                            key=f"v_body_edit_{v['id']}",
+                                        )
+                                        
+                                        if st.button("💾 Save Variant Changes", key=f"v_save_{v['id']}"):
+                                            res = api_put(
+                                                f"/campaigns/{ac['id']}/branches/{b['id']}/ab-variants/{v['id']}",
+                                                {"email_subject": v_sub, "email_body": v_body},
                                             )
+                                            if res:
+                                                st.success("Variant changes saved!")
+                                                time.sleep(0.5)
+                                                st.rerun()
                                         else:
                                             st.info("No content generated yet for this variant.")
 
@@ -1141,10 +1208,11 @@ with tab_ai:
                         horizontal=True, key=f"rate_{ac['id']}",
                     )
                     if st.button("Submit Rating", key=f"sr_{ac['id']}", type="primary"):
-                        api_post(f"/campaigns/{ac['id']}/rate", {"rating": rating})
-                        st.success("Rating submitted - running evaluation...")
-                        time.sleep(1)
-                        st.rerun()
+                        res = api_post(f"/campaigns/{ac['id']}/rate", {"rating": rating})
+                        if res:
+                            st.success(f"✅ Rating '{res.get('rating_saved', rating)}' saved - running evaluation...")
+                            time.sleep(1)
+                            st.rerun()
 
 # ------------------------------------------------------------------------------
 # TAB 6 - ENGAGEMENT ANALYTICS
@@ -1374,39 +1442,13 @@ with tab_monitor:
                         render_agent_run(r)
                     st.divider()
 
-def render_agent_run(r: dict):
-    status_colors = {"running": "🟡", "completed": "🟢", "failed": "🔴"}
-    icon = status_colors.get(r.get("status"), "⚪️")
-    agent_icons = {
-        "planner": "📝", "creator": "🎨", "executor": "🚀",
-        "feedback": "📊", "chat": "💬", "translate": "🌐",
-    }
-    a_icon = agent_icons.get(r.get("agent_type"), "🤖")
-    dur = f"{r['duration_ms']}ms" if r.get("duration_ms") else "running..."
-    started = fmt_dt(r.get("started_at"))
-    label = (
-        f"{icon} {a_icon} **{r.get('agent_type', '?').title()}** — "
-        f"f{r.get('status', '?')} • {dur} • {started}"
-    )
-    with st.expander(label, expanded=(r.get("status") == "running")):
-        c1, c2, c3 = st.columns(3)
-        c1.caption(f"**Campaign:** `{r.get('campaign_id', '-')[:20]}`")
-        c2.caption(f"**Branch:** `{r.get('branch_id', '-') or '-'}`")
-        c3.caption(f"**Variant:** `{r.get('variant_id', '-') or '-'}`")
-        if r.get("input_summary"):
-            st.markdown(f"**Input:** {r['input_summary']}")
-        if r.get("output_summary"):
-            st.success(f"**Output:** {r['output_summary']}")
-        if r.get("error_message"):
-            st.error(f"**Error:** {r['error_message']}")
-
 # 
 # TAB 8 - HISTORY
 # 
 
 with tab_history:
     st.header("Campaign History")
-    col_filter, col_ref = st.columns([4, 1])
+    col_filter, col_ref, col_auto = st.columns([3, 1, 1])
     status_filter = col_filter.selectbox(
         "Filter by status",
         [
@@ -1418,6 +1460,12 @@ with tab_history:
         key="hist_filter",
     )
     if col_ref.button("🔄 Refresh", key="refresh_hist"):
+        st.rerun()
+    
+    # Auto-refresh every 3 seconds when campaign is in progress
+    if col_auto.checkbox("Auto-refresh", value=False, key="auto_refresh_hist"):
+        import time
+        time.sleep(3)
         st.rerun()
 
     all_hist = api_get("/campaigns") or []
@@ -1435,10 +1483,13 @@ with tab_history:
                 f"{status_badge(c['status'])} — {c['goal'][:70]}{'...' if len(c['goal']) > 70 else ''}",
                 expanded=False,
             ):
-                mc1, mc2, mc3 = st.columns(3)
+                mc1, mc2, mc3, mc4 = st.columns(4)
                 mc1.metric("Status", detail["status"].replace("_", " ").title())
                 mc2.metric("Branches", len(detail.get("branches", [])))
-                mc3.metric("Rating", detail.get("rating") or "-")
+                branches_h_data = detail.get("branches", [])
+                total_sent_h = sum(int(b.get("sent_count") or 0) for b in branches_h_data)
+                mc3.metric("Audience Count", f"{total_sent_h:,}")
+                mc4.metric("Rating", detail.get("rating") or "-")
 
                 st.caption(
                     f"**ID:** `{c['id']}` | Created: {fmt_dt(c.get('created_at'))} | "
@@ -1464,7 +1515,7 @@ with tab_history:
                         st.write(
                             f"• **{b['branch_name']}** — "
                             f"{b.get('language') or 'Any'} / {b.get('country') or 'Any'} — "
-                            f"Status: `{b['status']}` — Send: {sched_str}"
+                            f"Send: {sched_str}"
                         )
 
                 if detail.get("evaluation"):

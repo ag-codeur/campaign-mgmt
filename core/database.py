@@ -365,7 +365,7 @@ def _migrate_users_table(eng):
             for col_name, col_def in new_cols:
                 if col_name not in existing:
                     conn.execute(
-                        f"ALTER TABLE users ADD COLUMN {col_name} {col_def}"
+                        __import__("sqlalchemy").text(f"ALTER TABLE users ADD COLUMN {col_name} {col_def}")
                     )
 
 def _migrate_campaigns_table(eng):
@@ -378,14 +378,14 @@ def _migrate_campaigns_table(eng):
         if "business_unit" not in existing:
             with eng.begin() as conn:
                 conn.execute(
-                    "ALTER TABLE campaigns ADD COLUMN business_unit VARCHAR"
+                    __import__("sqlalchemy").text("ALTER TABLE campaigns ADD COLUMN business_unit VARCHAR")
                 )
 
 def init_db():
-    # Run migrations before create_all so existing tables get new columns
+    # Create all tables first, then run migrations to add new columns to existing tables
+    Base.metadata.create_all(bind=engine)
     _migrate_users_table(engine)
     _migrate_campaigns_table(engine)
-    Base.metadata.create_all(bind=engine)
     _seed_users()
     _seed_recipients()
 
