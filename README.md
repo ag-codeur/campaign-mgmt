@@ -147,5 +147,3 @@ streamlit run ui/app.py
 | **LangSmith** | [https://smith.langchain.com](https://smith.langchain.com) |
 
 ---
-
-**Would you like me to extract the specific API endpoint tables or the Demo Users list as well?**
